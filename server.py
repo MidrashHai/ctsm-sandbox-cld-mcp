@@ -15,8 +15,22 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
-mcp = FastMCP("ctsm-sandbox-demo", stateless_http=True)
+# Autorise le domaine public Render (et un domaine perso optionnel) a passer
+# la protection anti-DNS-rebinding integree au SDK MCP (sinon 421 Misdirected Request).
+_allowed_hosts = ["ctsm-sandbox-cld-mcp.onrender.com", "*.onrender.com", "mcp.elhai.eu", "localhost:*", "127.0.0.1:*"]
+_allowed_origins = ["https://ctsm-sandbox-cld-mcp.onrender.com", "https://*.onrender.com", "https://mcp.elhai.eu"]
+
+mcp = FastMCP(
+    "ctsm-sandbox-demo",
+    stateless_http=True,
+    transport_security=TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=_allowed_hosts,
+        allowed_origins=_allowed_origins,
+    ),
+)
 
 TOLERANCE_METERS = 10.0
 NOMINAL_BSSID = "TEST:00:00:00:00:00"
