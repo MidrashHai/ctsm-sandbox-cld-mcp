@@ -22,9 +22,13 @@ Constat de départ, important : **ce MCP est, sur plusieurs primitives, le plus 
 
 ## Primitives à intégrer, par ordre de priorité
 
-### 1 · YAD_EMET_EFFECTOR — priorité la plus haute
+### 1 · YAD_EMET_EFFECTOR — **FAIT le 24 septembre 2026 (GovernedAgent™ v1.1)**
 
-`autoriser_execution_action` calcule déjà tout ce qu'un Gate doit calculer, et produit même une `signatureOpposable` de l'enclave. Il manque exactement une pièce : **un effecteur séparé qui refuse d'agir sans cette signature**, à la place de l'actuel « la fonction retourne un verdict et l'appelant fait ce qu'il veut ensuite ». Concrètement : tout outil de ce serveur (ou tout outil externe accessible au même agent) qui produit un effet réel devrait exiger en paramètre le `signatureOpposable` d'un appel `autoriser_execution_action` récent et correspondant exactement à l'action tentée — vérifié indépendamment, pas seulement transmis. C'est la même transformation que celle faite sur `governed-agent.mjs` en v0.6.3 (dépôt N°14) : un Gate qui décide, un effecteur séparé qui vérifie avant d'agir.
+Implémenté, pas seulement conçu : `emettre_jeton_effet` / `verifier_et_consommer_jeton_effet` (Ed25519, TTL 300s, nonce, lié par hash à action_id/person_id/type_device/scope, registre de rejeu persistant, clé privée `0600`). `autoriser_execution_action` émet le jeton uniquement si la Porte ouvre réellement et qu'un `action_id` est fourni. Premier outil d'effet réellement gardé : `ecrire_incident_urgence_pc_personnel` — refuse toute écriture sans jeton valide, unique, non expiré, au binding exact.
+
+Testé hostilement — 7/7, `tests/test_yad_emet_effector.py` : jeton absent, rejeu, signature falsifiée après coup, jeton émis pour une autre action, jeton expiré (même re-signé), permissions de la clé privée. Voir `9-Primitives_AgentProof/6-YAD_EMET_EFFECTOR/README.md` pour le statut détaillé.
+
+**Ce qui reste** : un seul outil sur ~10 outils d'effet du fichier est gardé pour l'instant. Les autres (`provisionner_secure_enclave_reel_employe`, `retirer_secure_enclave_reel_employe`, `ajouter_ressource_employe`, `inscrire_employe_gouverne`, etc.) restent non gardés — migration délibérément non faite en une seule fois vu leur sensibilité (provisionnement matériel réel), à traiter un par un.
 
 ### 2 · GATE_SOUVERAINE
 

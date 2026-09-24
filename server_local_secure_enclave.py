@@ -73,15 +73,23 @@
 #   dans MISE-A-JOUR-9-Primitives-AgentProof.md à la lumière de la bibliothèque
 #   17-Bibliotheque_Tavnit AgentProof/9-Primitives_AgentProof/.
 #
-#   CE QUE v1.1 NE CHANGE PAS : le trou identifié dans ce document reste ouvert.
-#   autoriser_execution_action calcule un verdict et une signatureOpposable ;
-#   AUCUN outil de ce fichier n'exige cette signature avant de produire un
-#   effet réel. Le bypass démontré dans les captures du 10 sept — un verdict
-#   HORS_MANDAT contourné par un outil non gardé — reste possible aujourd'hui
-#   pour la même raison structurelle. v1.1/CTSM-v1.4 est un renommage et une
-#   consolidation documentaire, pas la primitive YAD_EMET_EFFECTOR. Voir
-#   9-Primitives_AgentProof/6-YAD_EMET_EFFECTOR/ pour ce qu'il faudrait
-#   réellement ajouter pour fermer ce point.
+#   MISE À JOUR (même jour) · YAD_EMET_EFFECTOR intégrée : emettre_jeton_effet
+#   / verifier_et_consommer_jeton_effet (Ed25519, TTL 300s, nonce, liaison par
+#   hash, registre de rejeu). autoriser_execution_action émet le jeton si la
+#   Porte ouvre ET qu'un action_id est fourni. Premier outil d'effet
+#   réellement gardé : ecrire_incident_urgence_pc_personnel — testé
+#   hostilement, 7/7 (tests/test_yad_emet_effector.py).
+#
+#   CE QUI RESTE OUVERT : un seul outil d'effet sur ~10 est gardé. Le bypass
+#   du 10 sept reste possible via tout AUTRE outil d'effet de ce fichier
+#   (provisionner_secure_enclave_reel_employe, retirer_secure_enclave_reel_
+#   employe, ajouter_ressource_employe, inscrire_employe_gouverne, etc.) qui
+#   n'exige pas encore ce jeton. Migration délibérément progressive, pas
+#   globale, vu la sensibilité de ces outils (provisionnement matériel réel).
+#   Voir MISE-A-JOUR-9-Primitives-AgentProof.md pour l'ordre restant, et
+#   GATE_SOUVERAINE / EXCLUSIVE_CAPABILITY_OWNERSHIP (9-Primitives_AgentProof/)
+#   pour ce que ce jeton ne couvre toujours pas : signature humaine pour
+#   l'irréversible, et séparation de compte OS.
 #
 # A lancer localement et à déclarer dans la configuration MCP de Claude Desktop
 # (ou de Codex) pour que l'agent puisse appeler ces outils directement.
@@ -103,8 +111,8 @@ from datetime import datetime, timezone
 from typing import Optional
 import secrets
 import base64
-from cryptography.hazmat.primitives.asymmetric import ec
-from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import ec, ed25519
+from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.exceptions import InvalidSignature
 
 from mcp.server.fastmcp import FastMCP
@@ -792,14 +800,26 @@ def verifier_portee_ressource_device(
 REGISTRE_INCIDENTS_PATH = os.path.expanduser("~/.ctsm_registre_incidents.json")
 
 
+ACTION_ID_ECRIRE_INCIDENT = "ecrire_incident_urgence_pc_personnel"
+
+
 @mcp.tool()
 def ecrire_incident_urgence_pc_personnel(
     person_id: str,
     description_incident: str,
     declare_pc_principal_hors_service: bool,
+    jeton_effet: Optional[dict] = None,
 ) -> dict:
     """
     [MUTATION REELLE — ecrit ~/.ctsm_registre_incidents.json, append-only]
+    GovernedAgent™ v1.1 (24 sept 2026) — premiere integration reelle de
+    YAD_EMET_EFFECTOR. jeton_effet doit venir d'un appel a
+    autoriser_execution_action(..., action_id="ecrire_incident_urgence_pc_personnel",
+    type_device="PC_PERSONNEL") dont la Porte a reellement ouvert. Sans jeton
+    valide, correspondant exactement a ce person_id et a PC_PERSONNEL, non
+    deja consomme, non expire (TTL 300s) : aucune ecriture n'a lieu, quelle
+    que soit la valeur de declare_pc_principal_hors_service.
+
     Seule action que la Couche 4 autorise depuis un PC_PERSONNEL : ajouter
     une entree au registre des incidents de l'entreprise. Ne verifie jamais
     techniquement que le PC principal est reellement hors service — ce
@@ -813,12 +833,24 @@ def ecrire_incident_urgence_pc_personnel(
         description_incident: texte libre decrivant l'incident
         declare_pc_principal_hors_service: doit etre explicitement True pour
                     que l'ecriture ait lieu ; jamais suppose par defaut
+        jeton_effet: jeton emis par autoriser_execution_action, obligatoire
 
     Returns:
         {"statut": "INCIDENT_ENREGISTRE", "entree": {...}} si accepte, ou
         {"statut": "REFUSE", "raison": ...} si la declaration n'est pas
-        explicitement True.
+        explicitement True OU si le jeton d'effet est absent/invalide.
     """
+    verification_jeton = verifier_et_consommer_jeton_effet(
+        jeton_effet, ACTION_ID_ECRIRE_INCIDENT, person_id, "PC_PERSONNEL", "PUBLIC_GOVERNED_ACTION",
+    )
+    if not verification_jeton["autorise"]:
+        return {
+            "statut": "REFUSE",
+            "raison": f"JETON_EFFET_REFUSE : {verification_jeton['raison']}",
+            "message": "Aucune ecriture n'a lieu sans jeton d'effet valide, unique et non expire (YAD_EMET_EFFECTOR).",
+            "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        }
+
     if declare_pc_principal_hors_service is not True:
         return {
             "statut": "REFUSE",
@@ -2963,6 +2995,141 @@ def verifier_continuite_chaine_stat(person_id: str, previous_stat_hash: Optional
     }
 
 
+# ------------------------------------------------------------------------------
+# YAD EMET EFFECTOR · v1.1 (24 sept 2026) — voir 17-Bibliotheque_Tavnit AgentProof/
+# 9-Primitives_AgentProof/6-YAD_EMET_EFFECTOR/ et MISE-A-JOUR-9-Primitives-AgentProof.md
+# ------------------------------------------------------------------------------
+# PROBLEME  : autoriser_execution_action calculait un verdict et une
+#             signatureOpposable (HMAC sur un fichier arbitraire, sans TTL, sans
+#             nonce, sans liaison a l'action precise) que rien n'obligeait un
+#             outil d'effet a exiger avant d'agir. Demontre par
+#             capture_GovernedAgent_1/2_...png (10 sept 2026) sur un mecanisme
+#             different mais structurellement identique.
+#
+# LOI       : un effet reel ne peut etre produit sans un jeton signe, a usage
+#             unique, borne dans le temps, lie par hash a l'action, au
+#             person_id et au type_device exacts qui ont ete evalues par la
+#             Porte de Gouvernance -- jamais un verdict texte que l'outil
+#             d'effet pourrait choisir d'ignorer.
+#
+# HOQ       : jeton Ed25519, TTL maximum 300s (meme discipline que
+#             effect-token-v04.mjs, depot N14), nonce a usage unique consomme
+#             dans un registre local persistant. Cle privee generee au premier
+#             usage, fichier 0600, jamais transmise. Un jeton absent, expire,
+#             deja consomme, ou dont le binding ne correspond pas exactement
+#             est refuse sans exception -- fail closed.
+#
+# SEQUENCE  : autoriser_execution_action emet le jeton SEULEMENT si
+#             porte_ouverte est vraie -> l'outil d'effet appelle
+#             verifier_et_consommer_jeton_effet avant toute mutation -> refus
+#             immediat si invalide, sans effet partiel.
+#
+# CODE      : ci-dessous.
+# ------------------------------------------------------------------------------
+YAD_EMET_CLE_PATH = os.path.expanduser("~/.ctsm_yad_emet_effect_private.pem")
+YAD_EMET_STATE_PATH = os.path.expanduser("~/.ctsm_yad_emet_state.json")
+YAD_EMET_TTL_SECONDES = 300
+
+
+def _yad_emet_cle_privee() -> ed25519.Ed25519PrivateKey:
+    if os.path.exists(YAD_EMET_CLE_PATH):
+        with open(YAD_EMET_CLE_PATH, "rb") as f:
+            return serialization.load_pem_private_key(f.read(), password=None)
+    cle = ed25519.Ed25519PrivateKey.generate()
+    pem = cle.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+    fd = os.open(YAD_EMET_CLE_PATH, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "wb") as f:
+        f.write(pem)
+    return cle
+
+
+def _yad_emet_etat() -> dict:
+    if os.path.exists(YAD_EMET_STATE_PATH):
+        try:
+            with open(YAD_EMET_STATE_PATH, "r") as f:
+                return json.load(f)
+        except Exception:  # noqa: BLE001
+            pass
+    return {"schema": "YAD_EMET_EFFECTOR_STATE_V1_1", "joncsConsommes": []}
+
+
+def _yad_emet_sauver_etat(etat: dict) -> None:
+    tmp = f"{YAD_EMET_STATE_PATH}.tmp"
+    with open(tmp, "w") as f:
+        json.dump(etat, f, indent=2, ensure_ascii=False)
+    os.replace(tmp, YAD_EMET_STATE_PATH)
+
+
+def _yad_emet_canonicaliser(valeur) -> str:
+    return json.dumps(valeur, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def emettre_jeton_effet(action_id: str, person_id: Optional[str], type_device: Optional[str], scope: str) -> dict:
+    """N'appeler que depuis autoriser_execution_action, et seulement si
+    porte_ouverte est vraie. Jeton a usage unique, TTL 300s, lie par hash aux
+    quatre champs exacts qui devront etre presentes tels quels a la verification."""
+    cle = _yad_emet_cle_privee()
+    maintenant = datetime.now(timezone.utc)
+    charge_utile = {
+        "schema": "YAD_EMET_EFFECT_TOKEN_V1_1",
+        "tokenId": f"yet-{uuid.uuid4()}",
+        "nonce": secrets.token_hex(16),
+        "actionId": action_id,
+        "personId": person_id,
+        "typeDevice": type_device,
+        "scope": scope,
+        "issuedAtIso": maintenant.isoformat(),
+        "validUntilIso": (maintenant.timestamp() + YAD_EMET_TTL_SECONDES),
+    }
+    charge_utile["validUntilIso"] = datetime.fromtimestamp(charge_utile["validUntilIso"], tz=timezone.utc).isoformat()
+    signature = cle.sign(_yad_emet_canonicaliser(charge_utile).encode("utf-8"))
+    return {"tokenPayload": charge_utile, "signatureBase64": base64.b64encode(signature).decode("ascii")}
+
+
+def verifier_et_consommer_jeton_effet(jeton: Optional[dict], action_id_attendu: str, person_id_attendu: Optional[str], type_device_attendu: Optional[str], scope_attendu: str) -> dict:
+    """La garde d'effet elle-meme. Verifie signature, TTL, unicite (registre
+    local persistant), et correspondance EXACTE de action_id/person_id/
+    type_device/scope -- jamais une correspondance partielle. Consomme le
+    jeton (usage unique) uniquement si tout le reste est valide."""
+    if not jeton or not isinstance(jeton, dict) or "tokenPayload" not in jeton or "signatureBase64" not in jeton:
+        return {"autorise": False, "raison": "JETON_ABSENT"}
+    charge = jeton["tokenPayload"]
+    try:
+        cle_publique = _yad_emet_cle_privee().public_key()
+        cle_publique.verify(base64.b64decode(jeton["signatureBase64"]), _yad_emet_canonicaliser(charge).encode("utf-8"))
+    except (InvalidSignature, Exception):  # noqa: BLE001
+        return {"autorise": False, "raison": "SIGNATURE_INVALIDE"}
+
+    maintenant = datetime.now(timezone.utc)
+    try:
+        expire_le = datetime.fromisoformat(charge["validUntilIso"])
+    except Exception:  # noqa: BLE001
+        return {"autorise": False, "raison": "TTL_ILLISIBLE"}
+    if maintenant > expire_le:
+        return {"autorise": False, "raison": "JETON_EXPIRE"}
+
+    if (
+        charge.get("actionId") != action_id_attendu
+        or charge.get("personId") != person_id_attendu
+        or charge.get("typeDevice") != type_device_attendu
+        or charge.get("scope") != scope_attendu
+    ):
+        return {"autorise": False, "raison": "BINDING_NON_CORRESPONDANT"}
+
+    etat = _yad_emet_etat()
+    token_id = charge.get("tokenId")
+    if not token_id or token_id in etat["joncsConsommes"]:
+        return {"autorise": False, "raison": "JETON_REJOUE"}
+
+    etat["joncsConsommes"].append(token_id)
+    _yad_emet_sauver_etat(etat)
+    return {"autorise": True, "raison": "EFFET_AUTORISE", "tokenId": token_id}
+
+
 @mcp.tool()
 def autoriser_execution_action(
     latitude: float,
@@ -2976,12 +3143,18 @@ def autoriser_execution_action(
     destination_lat: Optional[float] = None,
     destination_lon: Optional[float] = None,
     previous_stat_hash: Optional[str] = None,
+    action_id: Optional[str] = None,
+    scope: str = "PUBLIC_GOVERNED_ACTION",
 ) -> dict:
     """
-    GovernedAgent™ v1.1 (24 sept 2026, renommage — voir en-tête du fichier).
-    Verdict + signatureOpposable seulement : aucun effecteur séparé n'exige
-    encore cette signature avant un effet réel (YAD_EMET_EFFECTOR non
-    intégrée — voir 9-Primitives_AgentProof/6-YAD_EMET_EFFECTOR/).
+    GovernedAgent™ v1.1 (24 sept 2026) — YAD_EMET_EFFECTOR intégrée.
+    Si la Porte ouvre ET que action_id est fourni, un jetonEffet Ed25519 à
+    usage unique (TTL 300s) est émis, lié par hash à action_id/person_id/
+    type_device/scope. Sans action_id, aucun jeton n'est émis — comportement
+    inchangé pour les appelants existants qui ne le fournissent pas encore.
+    Les outils d'effet doivent exiger ce jeton via
+    verifier_et_consommer_jeton_effet() avant toute mutation ; voir
+    ecrire_incident_urgence_pc_personnel pour la première intégration réelle.
     [PORTE DE GOUVERNANCE — compose 6 couches deja reelles, ne les duplique
     pas] Refuse ou autorise l'execution d'une action gouvernee en exigeant
     que les six couches suivantes soient TOUTES vertes, sans compensation
@@ -3174,6 +3347,14 @@ def autoriser_execution_action(
     # sur un refus, meme partiel.
     if porte_ouverte and person_id is not None:
         _avancer_chaine_si_succes(person_id, resultat)
+
+    # YAD_EMET_EFFECTOR v1.1 -- emission du jeton d'effet, seulement si la
+    # Porte ouvre reellement ET que l'appelant a fourni l'action_id precise
+    # qu'il compte ensuite presenter a un outil d'effet.
+    if porte_ouverte and action_id:
+        resultat["jetonEffet"] = emettre_jeton_effet(action_id, person_id, type_device, scope)
+    elif action_id and not porte_ouverte:
+        resultat["jetonEffet"] = None
 
     return resultat
 
