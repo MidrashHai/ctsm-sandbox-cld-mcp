@@ -3026,8 +3026,21 @@ def verifier_continuite_chaine_stat(person_id: str, previous_stat_hash: Optional
 #
 # CODE      : ci-dessous.
 # ------------------------------------------------------------------------------
-YAD_EMET_CLE_PATH = os.path.expanduser("~/.ctsm_yad_emet_effect_private.pem")
-YAD_EMET_STATE_PATH = os.path.expanduser("~/.ctsm_yad_emet_state.json")
+# EXCLUSIVE_CAPABILITY_OWNERSHIP (24 sept 2026) -- si MIDRASH_HAI_OS_SYSTEM_HOME
+# est definie (positionnee par deployment/macos/install-MidrashHai_OS-System.sh
+# une fois le compte systeme reellement cree), la cle et l'etat vivent dans un
+# repertoire appartenant EXCLUSIVEMENT au compte MidrashHai_OS-System, 0700 --
+# le compte qui lance ce process aujourd'hui (celui de l'utilisateur normal,
+# via stdio depuis Claude Desktop/Codex) n'y a alors plus acces en ecriture.
+# Sans cette variable (etat par defaut, avant installation), retombe sur
+# ~/.ctsm_yad_emet_* comme avant -- rien ne casse pour qui n'a pas installe.
+_MIDRASH_HAI_OS_SYSTEM_HOME = os.environ.get("MIDRASH_HAI_OS_SYSTEM_HOME")
+if _MIDRASH_HAI_OS_SYSTEM_HOME:
+    YAD_EMET_CLE_PATH = os.path.join(_MIDRASH_HAI_OS_SYSTEM_HOME, "yad-emet-effect-private.pem")
+    YAD_EMET_STATE_PATH = os.path.join(_MIDRASH_HAI_OS_SYSTEM_HOME, "yad-emet-state.json")
+else:
+    YAD_EMET_CLE_PATH = os.path.expanduser("~/.ctsm_yad_emet_effect_private.pem")
+    YAD_EMET_STATE_PATH = os.path.expanduser("~/.ctsm_yad_emet_state.json")
 YAD_EMET_TTL_SECONDES = 300
 
 
@@ -3128,6 +3141,64 @@ def verifier_et_consommer_jeton_effet(jeton: Optional[dict], action_id_attendu: 
     etat["joncsConsommes"].append(token_id)
     _yad_emet_sauver_etat(etat)
     return {"autorise": True, "raison": "EFFET_AUTORISE", "tokenId": token_id}
+
+
+# ------------------------------------------------------------------------------
+# GATE SOUVERAINE · v1.0 (24 sept 2026) — voir 17-Bibliotheque_Tavnit AgentProof/
+# 9-Primitives_AgentProof/9-GATE_SOUVERAINE/
+# ------------------------------------------------------------------------------
+# PROBLEME  : YAD_EMET_EFFECTOR garantit la fidelite d'execution (un effet ne
+#             sort jamais sans jeton valide), jamais la justesse de la
+#             decision. Rien ne demande a un humain d'approuver une action
+#             classee irreversible avant que le Gate ne signe un jeton.
+#
+# LOI       : pour toute action_id classee irreversible, aucun jeton d'effet
+#             n'est emis sans une signature FRAICHE (nonce nouveau a chaque
+#             appel, jamais rejouable) d'un compte souverain distinct du
+#             compte qui fait tourner ce process. L'agent ne peut jamais
+#             signer sa propre autorisation souveraine (AIMPL-005) : la cle
+#             vit dans le Secure Enclave du compte macOS personnel de
+#             l'utilisateur, jamais dans MidrashHai_OS-System.
+#
+# HOQ       : reutilise le challenge/signature deja reel et teste de
+#             verifier_secure_enclave_reel_employe -- pas un nouveau
+#             mecanisme cryptographique, un nouveau person_id distinct
+#             (SOUVERAIN_PERSON_ID) qui ne doit jamais etre confondu avec un
+#             employe ordinaire ni avec le compte de service.
+#
+# SEQUENCE  : provisionnement une fois, physiquement, par l'utilisateur
+#             (inscrire_employe_gouverne puis provisionner_secure_enclave_
+#             reel_employe pour SOUVERAIN_PERSON_ID) -> a chaque action
+#             classee irreversible, autoriser_execution_action exige un
+#             verdict SIGNATURE_VALIDE frais avant d'emettre le jeton.
+#
+# LIMITE HONNETE : la verification materielle reelle (Touch ID) n'a pas ete
+# demontree par l'agent qui a ecrit ce code -- aucun acces a une session
+# graphique ni a la puce Secure Enclave depuis l'outil qui a produit ce
+# fichier. Seule la logique de branchement (classe irreversible -> exige
+# signature fraiche -> refuse sans SIGNATURE_VALIDE) a ete testee, avec la
+# frontiere materielle simulee. Provisionnement et premiere verification
+# reelle restent a faire par l'utilisateur, physiquement.
+# ------------------------------------------------------------------------------
+SOUVERAIN_PERSON_ID = "midrash-hai-souverain"
+SOUVERAIN_TYPE_DEVICE_DEFAUT = "PC_PERSONNEL"
+ACTIONS_CLASSEES_IRREVERSIBLES = {
+    ACTION_ID_ECRIRE_INCIDENT,
+}  # classification volontairement minimale au depart -- a etendre explicitement,
+   # jamais par deduction, chaque ajout doit etre une decision consciente.
+
+
+def exiger_autorisation_souveraine(action_id: str, type_device_souverain: str = SOUVERAIN_TYPE_DEVICE_DEFAUT) -> dict:
+    """Couche zero, avant toute emission de jeton d'effet, pour les actions
+    classees irreversibles. Ne remplace jamais autoriser_execution_action --
+    s'ajoute en precondition. Une action non classee irreversible passe
+    sans friction (requise=False)."""
+    if action_id not in ACTIONS_CLASSEES_IRREVERSIBLES:
+        return {"requise": False, "autorise": True, "raison": "ACTION_NON_CLASSEE_IRREVERSIBLE"}
+    verdict = verifier_secure_enclave_reel_employe(SOUVERAIN_PERSON_ID, type_device_souverain)
+    if verdict.get("verdict") != "SIGNATURE_VALIDE":
+        return {"requise": True, "autorise": False, "raison": f"SOUVERAIN_NON_CONFIRME:{verdict.get('verdict')}"}
+    return {"requise": True, "autorise": True, "raison": "SOUVERAIN_CONFIRME_FRAIS"}
 
 
 @mcp.tool()
@@ -3348,9 +3419,25 @@ def autoriser_execution_action(
     if porte_ouverte and person_id is not None:
         _avancer_chaine_si_succes(person_id, resultat)
 
+    # GATE SOUVERAINE -- couche zero pour les actions classees irreversibles,
+    # AVANT toute emission de jeton. Une signature souveraine manquante ou
+    # perimee bloque l'emission meme si les six couches precedentes sont
+    # toutes vertes.
+    verdict_souverain = None
+    if porte_ouverte and action_id:
+        verdict_souverain = exiger_autorisation_souveraine(action_id)
+        if verdict_souverain["requise"] and not verdict_souverain["autorise"]:
+            porte_ouverte = False
+            causes_refus.append(f"GATE_SOUVERAINE_REFUSEE : {verdict_souverain['raison']}")
+            resultat["verdict"] = "REFUSE [PORTE_FERMEE]"
+            resultat["causeRefus"] = causes_refus
+    if verdict_souverain is not None:
+        resultat["gateSouveraine"] = verdict_souverain
+
     # YAD_EMET_EFFECTOR v1.1 -- emission du jeton d'effet, seulement si la
-    # Porte ouvre reellement ET que l'appelant a fourni l'action_id precise
-    # qu'il compte ensuite presenter a un outil d'effet.
+    # Porte ouvre reellement (Gate Souveraine comprise) ET que l'appelant a
+    # fourni l'action_id precise qu'il compte ensuite presenter a un outil
+    # d'effet.
     if porte_ouverte and action_id:
         resultat["jetonEffet"] = emettre_jeton_effet(action_id, person_id, type_device, scope)
     elif action_id and not porte_ouverte:

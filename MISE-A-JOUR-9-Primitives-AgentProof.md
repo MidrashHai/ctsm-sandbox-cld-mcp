@@ -30,13 +30,19 @@ Testé hostilement — 7/7, `tests/test_yad_emet_effector.py` : jeton absent, re
 
 **Ce qui reste** : un seul outil sur ~10 outils d'effet du fichier est gardé pour l'instant. Les autres (`provisionner_secure_enclave_reel_employe`, `retirer_secure_enclave_reel_employe`, `ajouter_ressource_employe`, `inscrire_employe_gouverne`, etc.) restent non gardés — migration délibérément non faite en une seule fois vu leur sensibilité (provisionnement matériel réel), à traiter un par un.
 
-### 2 · GATE_SOUVERAINE
+### 2 · GATE_SOUVERAINE — **FAIT le 24 septembre 2026, logique seulement**
 
-`autoriser_execution_action` n'a aucune notion d'irréversibilité ni d'attente de signature humaine. Les six couches sont algorithmiques de bout en bout. Pour les actions classées irréversibles (à définir explicitement, voir `9-GATE_SOUVERAINE/TESTS-AVANT-INTEGRATION.md`), une septième couche non compensatoire — signature humaine fraîche, clé hors de portée de l'agent — fermerait la question de justesse que les six couches actuelles ne posent pas.
+`exiger_autorisation_souveraine` + `SOUVERAIN_PERSON_ID` + `ACTIONS_CLASSEES_IRREVERSIBLES`, câblée en couche zéro dans `autoriser_execution_action` : une action classée irréversible ne peut plus obtenir de jeton sans un verdict `SIGNATURE_VALIDE` frais du compte souverain, distinct de `MidrashHai_OS-System`. Décision explicite du porteur du projet : le souverain, c'est lui, sur son propre compte macOS personnel — jamais le compte de service (première proposition écartée après qu'on a montré qu'elle cassait AIMPL-005).
 
-### 3 · EXCLUSIVE_CAPABILITY_OWNERSHIP
+Testé hostilement pour la logique — 6/6, `tests/test_gate_souveraine.py`. **Non démontré matériellement** : `verifier_secure_enclave_reel_employe` y est simulée, faute d'accès à une session graphique/Touch ID depuis l'outil qui a écrit ce code. Reste à faire, physiquement, par le porteur du projet : `inscrire_employe_gouverne(SOUVERAIN_PERSON_ID, ...)` puis `provisionner_secure_enclave_reel_employe(SOUVERAIN_PERSON_ID, "PC_PERSONNEL")`.
 
-Une fois YAD_EMET_EFFECTOR réellement séparé (étape 1), le faire tourner sous un compte dédié, sur le modèle de `deployment/macos/install-v07.sh` (dépôt N°14) — directement transposable, le script n'est pas spécifique à `REGISTER_TEST_ARTIFACT`.
+### 3 · EXCLUSIVE_CAPABILITY_OWNERSHIP — **Code livré le 24 septembre 2026, non installé**
+
+`deployment/macos/install-MidrashHai_OS-System.sh` (compte système, répertoire protégé `/var/db/midrash-hai-os-system`), `scripts/audit_exclusive_capability.py` (vérifie l'état réel, y compris une tentative d'écriture directe qui doit échouer). `YAD_EMET_CLE_PATH`/`YAD_EMET_STATE_PATH` basculent vers ce répertoire si `MIDRASH_HAI_OS_SYSTEM_HOME` est définie, rétrocompatible sinon.
+
+**Portée volontairement plus étroite que N°14** : protège les fichiers (clé, état de rejeu), pas encore le process lui-même — toujours lancé en stdio, sous le compte normal, par Claude Desktop/Codex. Migrer le lancement du process est une étape distincte, non faite.
+
+**Non installé** : requiert `sudo`, jamais exécuté par l'agent qui a écrit ce code — à lancer par le porteur du projet lui-même : `sudo deployment/macos/install-MidrashHai_OS-System.sh`, puis `python3 scripts/audit_exclusive_capability.py` pour vérifier.
 
 ### 4 · Durcir ROOT_OF_TRUST
 
